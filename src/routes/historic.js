@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { auth } from '../middleware/auth.js';
 import { Historic } from '../models/Historic.js';
+import {normalizeCoords} from './helpers.ts'
 
 const router = Router();
 
@@ -20,7 +21,13 @@ router.get('/changes', auth, async (req, res)=>{
             user_id: d.userId,
             license_plate: d.license_plate,description: d.description,
             status: d.status,
+            
             deleted: !!d.deleted,
+            coords: Array.isArray(d.coords) ? d.coords.map((coord)=>({
+                latitude: coord.latitude,
+                longitude: coord.longitude,
+                timestamp: new Date(coord.timestamp).toISOString()
+            })) : [],
             created_at: +new Date(d.createdAt),
             updated_at: +new Date(d.updatedAt),
         })),
@@ -30,11 +37,13 @@ router.get('/changes', auth, async (req, res)=>{
 
 router.post('/', auth, async (req,res)=>{
     const userId= req.user.id
-    const {id, license_plate, description, status, deleted} = req.body
+    const {id, license_plate, description, status, deleted, coords = []} = req.body
 
     if(!id || !license_plate || !description) {
         return res.status(400).json({error: 'Missing fields'})
     }
+
+    const normilizedCoords = normalizeCoords(coords)
 
     const doc = await Historic.findOneAndUpdate(
         {_id: id, userId},
@@ -45,26 +54,38 @@ router.post('/', auth, async (req,res)=>{
             description,
             status: status || 'departure',
             deleted: !!deleted,
+            ...(normilizedCoords.length ? {coords: normilizedCoords} : {})
         },
         {upsert: true, new: true, setDefaultsOnInsert: true}
     )
     res.json({ok: true, id: doc._id, updatedAt:+new Date(doc.updatedAt)})
 })
 
-router.put('/:id', auth, async (req, res)=>{
-    const userId= req.user.id
-    const {id} = req.params
-    const {license_plate, description, status, deleted} = req.body;
+router.put('/:id', auth, async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+  const { license_plate, description, status, deleted, coords } = req.body;
 
-    const doc = await Historic.findOneAndUpdate(
-        {_id: id, userId},
-        {license_plate, description, status, deleted: !!deleted},
-        {new: true},
-    )
-    if(!doc) return res.status(404).json({error: 'Not found'})
+  const update = {
+    ...(license_plate !== undefined ? { license_plate } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(deleted !== undefined ? { deleted: !!deleted } : {}),
+  };
 
-    res.json({ok: true, id: doc._id, updatedAt:+new Date(doc.updatedAt)})
-})
+  if (coords !== undefined) {
+    update.coords = normalizeCoords(coords);
+  }
+
+  const doc = await Historic.findOneAndUpdate({ _id: id, userId }, update, {
+    new: true,
+    runValidators: true,
+  });
+
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+
+  res.json({ ok: true, id: doc._id, updatedAt: +new Date(doc.updatedAt) });
+});
 
 router.delete('/:id', auth, async(req,res)=>{
     const userId = req.user.id
